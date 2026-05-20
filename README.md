@@ -19,14 +19,6 @@ A Java desktop application for designing, visualising, and stepping through quan
 
 ---
 
-## Screenshots
-
-| Login Client | Circuit Editor | Server |
-|---|---|---|
-| ![Client](images/QCClient.png) | ![QCS](images/qcs.png) | ![Server](images/QCServer.png) |
-
----
-
 ## Prerequisites
 
 | Requirement | Version | Notes |

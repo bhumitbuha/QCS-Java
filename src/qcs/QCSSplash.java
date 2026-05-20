@@ -34,7 +34,7 @@ public class QCSSplash {
         splash.setAlignment(Pos.CENTER);
         splash.setStyle("-fx-background-color: black;");
 
-        ImageView icon = new ImageView(new Image("file:../images/qcsicon.jpg"));
+        ImageView icon = new ImageView(new Image("file:images/qcsicon.jpg"));
         icon.setFitHeight(100);
         icon.setPreserveRatio(true);
 

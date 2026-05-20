@@ -42,6 +42,7 @@ public class QCSController {
     private static QCSController instance;
     private static String selectedGate = "H";
     private static final Set<String> MULTI_QUBIT_GATES = Set.of("CX", "SWAP", "CU", "CCX");
+    private static final Map<String, Integer> GATE_QUBIT_COUNT = Map.of("CX", 2, "SWAP", 2, "CU", 2, "CCX", 3);
 
     private BorderPane root;
     private QCSPanel gridPanel;
@@ -55,9 +56,11 @@ public class QCSController {
     private Stage mainStage;
     private boolean inDesignMode = true;
     private final QCSModel model;
-    private QCSGridButton firstMultiQubitButton = null;
+    private final List<QCSGridButton> pendingMultiQubitButtons = new ArrayList<>();
+    private String pendingGateType = null;
+    private HBox connectStrip;
 
-    // NEW: Store username if provided by login
+    // Store username if provided by login
     private String username = null;
 
     // --- client "Connect / End" strip (host, port) ---
@@ -119,7 +122,8 @@ public class QCSController {
         setupBottom();
 
         // add the Connect/End strip above grid+messages
-        VBox centerBox = new VBox(8, buildClientConnectStrip(), gridScrollPane, messagePanel);
+        connectStrip = buildClientConnectStrip();
+        VBox centerBox = new VBox(8, connectStrip, gridScrollPane, messagePanel);
         centerBox.setPadding(new Insets(10));
         VBox.setVgrow(gridScrollPane, Priority.ALWAYS);
         VBox.setVgrow(messagePanel, Priority.NEVER);
@@ -306,7 +310,7 @@ public class QCSController {
         Alert alert = new Alert(Alert.AlertType.INFORMATION);
         alert.setTitle(messages.getString("alert.about.title"));
         alert.setHeaderText(messages.getString("alert.about.header"));
-        ImageView imageView = new ImageView(new Image("file:../images/qcsicon.jpg"));
+        ImageView imageView = new ImageView(new Image("file:images/qcsicon.jpg"));
         imageView.setFitHeight(100); imageView.setPreserveRatio(true);
         alert.setGraphic(imageView);
         alert.setContentText(messages.getString("alert.about.content"));
@@ -329,7 +333,7 @@ public class QCSController {
      * @return a horizontal box containing the banner image
      */
     private HBox createBanner() {
-        ImageView banner = new ImageView(new Image("file:../images/qcs.png"));
+        ImageView banner = new ImageView(new Image("file:images/qcs.png"));
         banner.setPreserveRatio(true);
         banner.setFitHeight(90);
         HBox box = new HBox(banner);
@@ -468,7 +472,7 @@ public class QCSController {
                 int newCols = Integer.parseInt(parts[1].trim());
                 model.resize(newRows, newCols);
                 setupCenter();
-                VBox centerBox = new VBox(5, gridScrollPane, messagePanel);
+                VBox centerBox = new VBox(8, connectStrip, gridScrollPane, messagePanel);
                 centerBox.setPadding(new Insets(10));
                 VBox.setVgrow(gridScrollPane, Priority.ALWAYS);
                 VBox.setVgrow(messagePanel, Priority.NEVER);
@@ -486,8 +490,17 @@ public class QCSController {
      * @param locale new locale (e.g., {@link Locale#ENGLISH} or {@link Locale#FRENCH})
      */
     private void switchLanguage(Locale locale) {
+        clearPendingMultiQubit();
+        String savedGrid = (gridPanel != null) ? gridPanel.serializeGrid() : null;
+        int savedStep = currentStep;
         currentLocale = locale;
         start(mainStage);
+        if (savedGrid != null && !savedGrid.isEmpty() && gridPanel != null) {
+            gridPanel.deserializeGrid(savedGrid);
+            currentStep = Math.max(0, savedStep);
+            updateStepLabel();
+            gridPanel.updateAllAppearances();
+        }
     }
 
     /**
@@ -580,39 +593,60 @@ public class QCSController {
         int row = btn.getRow(), col = btn.getCol();
         try {
             if (MULTI_QUBIT_GATES.contains(gate)) {
-                if (firstMultiQubitButton == null) {
+                int needed = GATE_QUBIT_COUNT.getOrDefault(gate, 2);
+                // cancel in-progress placement if gate type changed mid-sequence
+                if (!pendingMultiQubitButtons.isEmpty() && !gate.equals(pendingGateType)) {
+                    clearPendingMultiQubit();
+                }
+                if (pendingMultiQubitButtons.isEmpty()) {
                     if (btn.isFilled()) throw new QCSModelException(messages.getString("log.cell.filled"));
-                    firstMultiQubitButton = btn; btn.setHighlighted(true);
-                    logMessage(messages.getString("log.multiq.prompt"));
+                    pendingGateType = gate;
+                    pendingMultiQubitButtons.add(btn);
+                    btn.setHighlighted(true);
+                    logMessage(messages.getString("log.multiq.prompt") + " (1/" + needed + ")");
                 } else {
-                    if (btn == firstMultiQubitButton) return;
-                    if (btn.getCol() != firstMultiQubitButton.getCol()) {
-                        firstMultiQubitButton.setHighlighted(false); firstMultiQubitButton = null;
+                    if (pendingMultiQubitButtons.contains(btn)) return;
+                    if (btn.getCol() != pendingMultiQubitButtons.get(0).getCol()) {
+                        clearPendingMultiQubit();
                         throw new QCSModelException(messages.getString("log.multiq.error"));
                     }
                     if (btn.isFilled()) {
-                        firstMultiQubitButton.setHighlighted(false); firstMultiQubitButton = null;
+                        clearPendingMultiQubit();
                         throw new QCSModelException(messages.getString("log.cell.filled"));
                     }
-                    int row1 = firstMultiQubitButton.getRow();
-                    int col1 = firstMultiQubitButton.getCol();
-                    firstMultiQubitButton.setGate(gate + "(1)");
-                    btn.setGate(gate + "(2)");
-                    firstMultiQubitButton.setHighlighted(false);
-                    firstMultiQubitButton = null;
-                    logMessage(MessageFormat.format(
-                            messages.getString("log.gate.multiq.placed"), gate, row1, col1, row, col));
+                    pendingMultiQubitButtons.add(btn);
+                    btn.setHighlighted(true);
+                    if (pendingMultiQubitButtons.size() == needed) {
+                        for (int i = 0; i < needed; i++) {
+                            QCSGridButton b = pendingMultiQubitButtons.get(i);
+                            b.setGate(gate + "(" + (i + 1) + ")");
+                            model.setGate(b.getRow(), b.getCol(), gate + "(" + (i + 1) + ")");
+                            b.setHighlighted(false);
+                        }
+                        StringBuilder rows = new StringBuilder();
+                        for (QCSGridButton b : pendingMultiQubitButtons) {
+                            if (rows.length() > 0) rows.append(",");
+                            rows.append(b.getRow());
+                        }
+                        logMessage(gate + " placed at rows " + rows + " col " + col);
+                        pendingMultiQubitButtons.clear();
+                        pendingGateType = null;
+                    } else {
+                        logMessage(messages.getString("log.multiq.prompt")
+                                + " (" + pendingMultiQubitButtons.size() + "/" + needed + ")");
+                    }
                 }
             } else if (gate.equals("BARRIER")) {
                 for (int r = 0; r < gridPanel.getRows(); r++) {
                     gridPanel.getButton(r, col).setGate("BARRIER");
+                    model.setGate(r, col, "BARRIER");
                 }
                 logMessage(messages.getString("log.barrier.placed").replace("{0}", String.valueOf(col)));
             } else {
                 if (!btn.isFilled()) {
                     btn.setGate(gate);
-                    logMessage(MessageFormat.format(
-                            messages.getString("log.gate.placed"), gate, row, col));
+                    model.setGate(row, col, gate);
+                    logMessage(MessageFormat.format(messages.getString("log.gate.placed"), gate, row, col));
                 } else {
                     throw new QCSModelException(messages.getString("log.cell.filled"));
                 }
@@ -621,6 +655,12 @@ public class QCSController {
             showError(e.getMessage());
         }
         gridPanel.updateAllAppearances();
+    }
+
+    private void clearPendingMultiQubit() {
+        for (QCSGridButton b : pendingMultiQubitButtons) b.setHighlighted(false);
+        pendingMultiQubitButtons.clear();
+        pendingGateType = null;
     }
 
     /**
@@ -780,14 +820,14 @@ public class QCSController {
             int nCols = rowParts[0].split(",").length;
 
             gridPanel = new QCSPanel(nRows, nCols);
-            for (int r = 0; r < nRows; r++) {
-                for (int c = 0; c < nCols; c++) {
-                    QCSGridButton btn = gridPanel.getButton(r, c);
-                    btn.setOnAction(e -> handleGridButtonClick(btn));
-                }
-            }
             gridPanel.deserializeGrid(gridData);
             if (gridScrollPane != null) gridScrollPane.setContent(gridPanel.getGrid());
+
+            // sync model to loaded state
+            model.resize(nRows, nCols);
+            for (int r = 0; r < nRows; r++)
+                for (int c = 0; c < nCols; c++)
+                    model.setGate(r, c, gridPanel.getButton(r, c).getGate());
 
             currentStep = Math.max(0, Math.min(loadedStep, nCols));
             updateStepLabel();
@@ -885,11 +925,10 @@ public class QCSController {
             return;
         }
 
-        final String host = "localhost";   // keep your values if you already have host/port fields
-        final int port = 12345;
+        final String host = currentHost();
+        final int port = currentPort();
 
         new Thread(() -> {
-            // ensure we send a single line (some servers block on '\n')
             String gridString = gridPanel.serializeGrid();
             if (gridString == null) gridString = "";
             gridString = gridString.replace("\r", " ").replace("\n", " ");
@@ -901,18 +940,16 @@ public class QCSController {
                 try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                      PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
-                    out.println(username + "#P2#" + gridString);  // save
+                    out.println(username + "#P2#" + gridString);
                     String reply = in.readLine();
 
                     if (reply != null && reply.contains("#P2#OK")) {
-                        javafx.application.Platform.runLater(() -> logMessage("Circuit saved to server!"));
+                        Platform.runLater(() -> logMessage("Circuit saved to server!"));
                     } else if (reply != null && reply.contains("#FAIL")) {
-                        javafx.application.Platform.runLater(() -> showError("Server reported FAIL saving circuit."));
+                        Platform.runLater(() -> showError("Server reported failure saving circuit."));
                     } else {
-                        // fallback for servers that don't echo OK
-                        out.println(username + "#P1#" + gridString);
-                        javafx.application.Platform.runLater(() ->
-                                logMessage("Circuit sent using fallback (P1). Server may not reply by design."));
+                        final String r = (reply == null) ? "(no response)" : reply;
+                        Platform.runLater(() -> logMessage("Unexpected server response: " + r));
                     }
                 }
             } catch (java.net.SocketTimeoutException te) {
@@ -963,15 +1000,13 @@ public class QCSController {
                         int nCols = rowParts[0].split(",").length;
 
                         javafx.application.Platform.runLater(() -> {
-                            // rebuild grid to the received size
                             gridPanel = new QCSPanel(nRows, nCols);
-                            for (int r = 0; r < nRows; r++) {
-                                for (int c = 0; c < nCols; c++) {
-                                    QCSGridButton btn = gridPanel.getButton(r, c);
-                                    btn.setOnAction(e -> handleGridButtonClick(btn));
-                                }
-                            }
                             gridPanel.deserializeGrid(circuit);
+                            // sync model to loaded state
+                            model.resize(nRows, nCols);
+                            for (int r = 0; r < nRows; r++)
+                                for (int c = 0; c < nCols; c++)
+                                    model.setGate(r, c, gridPanel.getButton(r, c).getGate());
                             gridScrollPane.setContent(gridPanel.getGrid());
                             gridPanel.updateAllAppearances();
                             logMessage("Circuit loaded from server.");

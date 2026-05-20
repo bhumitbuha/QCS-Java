@@ -112,7 +112,8 @@ public class QCSGridButton extends Button {
             setText(gate);
         } else if (!gate.isEmpty()) {
             setText(gate);
-            setStyle("-fx-background-color: " + QCSController.getGateColor(gate) + "; -fx-border-color: gray;");
+            String baseGate = gate.contains("(") ? gate.substring(0, gate.indexOf('(')) : gate;
+            setStyle("-fx-background-color: " + QCSController.getGateColor(baseGate) + "; -fx-border-color: gray;");
         } else {
             setText("");
             setStyle("-fx-background-color: #f5f5f5; -fx-border-color: lightgray;");

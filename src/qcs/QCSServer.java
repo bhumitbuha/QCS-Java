@@ -9,6 +9,8 @@ import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.*;
 
 /**
@@ -20,7 +22,7 @@ import java.util.concurrent.*;
  * It supports login, signup, circuit save, and circuit load operations.
  * </p>
  *
- * <h3>Protocol Commands</h3>
+ * <h2>Protocol Commands</h2>
  * <ul>
  *     <li>{@code username#P0#password} → Login request (replies {@code username#P0#OK} or {@code FAIL})</li>
  *     <li>{@code username#P1#password} → Signup request (replies {@code username#P1#OK} or {@code FAIL})</li>
@@ -28,7 +30,7 @@ import java.util.concurrent.*;
  *     <li>{@code username#P3}          → Load circuit (replies {@code username#P3#<circuit>} or {@code FAIL})</li>
  * </ul>
  *
- * <h3>GUI Controls</h3>
+ * <h2>GUI Controls</h2>
  * <ul>
  *     <li>Start – Start listening for clients on the specified port</li>
  *     <li>Create DB – Create/reset the SQLite database schema</li>
@@ -37,7 +39,7 @@ import java.util.concurrent.*;
  *     <li>End – Shut down the server and exit the application</li>
  * </ul>
  *
- * <h3>Database Schema</h3>
+ * <h2>Database Schema</h2>
  * <pre>
  * User(id INTEGER PK AUTOINCREMENT, username TEXT UNIQUE, password TEXT)
  * QuantumCircuits(username TEXT PK, circuit TEXT)
@@ -95,12 +97,14 @@ public class QCSServer extends JFrame {
         JButton btnCreateDB = new JButton("Create DB");
         JButton btnShowDB = new JButton("Show DB");
         JButton btnFinalize = new JButton("Finalize");
+        JButton btnLaunchClient = new JButton("Launch Client");
         JButton btnEnd = new JButton("End");
 
         top.add(btnStart);
         top.add(btnCreateDB);
         top.add(btnShowDB);
         top.add(btnFinalize);
+        top.add(btnLaunchClient);
         top.add(btnEnd);
         content.add(top, BorderLayout.CENTER);
 
@@ -115,6 +119,7 @@ public class QCSServer extends JFrame {
         btnCreateDB.addActionListener(e -> onCreateDB());
         btnShowDB.addActionListener(e -> onShowDB());
         btnFinalize.addActionListener(e -> onFinalize());
+        btnLaunchClient.addActionListener(e -> launchClientProcess());
         btnEnd.addActionListener(e -> shutdown());
 
         setSize(640, 420);
@@ -132,7 +137,7 @@ public class QCSServer extends JFrame {
      */
     private ImageIcon loadImage() {
         try {
-            Image img = new ImageIcon("../images/" + "QCServer.png")
+            Image img = new ImageIcon("images/" + "QCServer.png")
                     .getImage()
                     .getScaledInstance(520, 160, Image.SCALE_SMOOTH);
             return new ImageIcon(img);
@@ -249,6 +254,86 @@ public class QCSServer extends JFrame {
     }
 
     /**
+     * Launches QCSLoginClient in a new JVM process.
+     * JavaFX JARs are filtered out of the inherited classpath and placed on
+     * --module-path instead, preventing the split-module conflict that causes
+     * a silent crash when the same JAR appears on both paths.
+     * Child process stderr/stdout is piped to the server log.
+     */
+    private void launchClientProcess() {
+        String java    = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
+        String workDir = System.getProperty("user.dir");
+
+        // Build classpath: prefer known locations, fall back to current java.class.path
+        // (filtered to remove JavaFX JARs — they go on --module-path only)
+        List<String> cpEntries = new ArrayList<>();
+        for (String entry : System.getProperty("java.class.path", "").split(File.pathSeparator)) {
+            if (!entry.isEmpty() && !entry.toLowerCase().contains("javafx")) {
+                cpEntries.add(entry);
+            }
+        }
+        // Ensure compiled classes and SQLite are always included
+        File ideaOut = new File(workDir, "out/production/QCS");
+        File batJar  = new File(workDir, "bin/qcsclient.jar");
+        File sqJar   = new File(workDir, "lib/sqlite-jdbc.jar");
+        if (ideaOut.exists() && !cpEntries.contains(ideaOut.getAbsolutePath()))
+            cpEntries.add(0, ideaOut.getAbsolutePath());
+        if (batJar.exists() && !cpEntries.contains(batJar.getAbsolutePath()))
+            cpEntries.add(0, batJar.getAbsolutePath());
+        if (sqJar.exists() && !cpEntries.contains(sqJar.getAbsolutePath()))
+            cpEntries.add(sqJar.getAbsolutePath());
+
+        File fxLib = new File(workDir, "javafx-sdk-26.0.1/lib");
+
+        List<String> cmd = new ArrayList<>();
+        cmd.add(java);
+        if (fxLib.exists()) {
+            cmd.add("--module-path");
+            cmd.add(fxLib.getAbsolutePath());
+            cmd.add("--add-modules");
+            cmd.add("javafx.controls,javafx.fxml,javafx.graphics");
+            cmd.add("--enable-native-access=javafx.graphics");
+        }
+        cmd.add("-cp");
+        cmd.add(String.join(File.pathSeparator, cpEntries));
+        cmd.add("qcs.QCSLoginClient");
+
+        log("Launching: " + String.join(" ", cmd));
+        try {
+            Process p = new ProcessBuilder(cmd)
+                    .directory(new File(workDir))
+                    .redirectErrorStream(true)
+                    .start();
+            // Pipe client output to server log so errors are visible
+            new Thread(() -> {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    String line;
+                    while ((line = br.readLine()) != null) log("[Client] " + line);
+                } catch (IOException ignored) {}
+            }, "client-log").start();
+            log("Client launched.");
+        } catch (IOException e) {
+            log("Failed to launch client: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Returns the SHA-256 hex digest of {@code password}.
+     * Passwords are never stored or compared in plaintext.
+     */
+    private static String hashPassword(String password) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(password.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(hash.length * 2);
+            for (byte b : hash) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 unavailable", e);
+        }
+    }
+
+    /**
      * Handles communication with a single client.
      * Implements the QCS protocol.
      */
@@ -299,7 +384,7 @@ public class QCSServer extends JFrame {
             try (Connection conn = DriverManager.getConnection(DB_URL);
                  PreparedStatement ps = conn.prepareStatement("SELECT 1 FROM User WHERE username=? AND password=?")) {
                 ps.setString(1, username);
-                ps.setString(2, password);
+                ps.setString(2, hashPassword(password));
                 try (ResultSet rs = ps.executeQuery()) { return rs.next(); }
             } catch (SQLException e) { log("DB login error: " + e.getMessage()); return false; }
         }
@@ -308,7 +393,7 @@ public class QCSServer extends JFrame {
             try (Connection conn = DriverManager.getConnection(DB_URL);
                  PreparedStatement ps = conn.prepareStatement("INSERT INTO User(username,password) VALUES(?,?)")) {
                 ps.setString(1, username);
-                ps.setString(2, password);
+                ps.setString(2, hashPassword(password));
                 ps.executeUpdate();
                 return true;
             } catch (SQLException e) { log("DB signup error: " + e.getMessage()); return false; }

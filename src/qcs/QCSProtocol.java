@@ -10,7 +10,7 @@ package qcs;
  * third contains additional data such as a password or circuit data.
  * </p>
  *
- * <h3>Protocol Codes</h3>
+ * <h2>Protocol Codes</h2>
  * <ul>
  *   <li>{@link #P0_LOGIN}  - Login request: {@code username#P0#password}</li>
  *   <li>{@link #P1_SIGNUP} - Signup request: {@code username#P1#password}</li>

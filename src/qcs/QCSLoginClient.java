@@ -19,7 +19,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 
 /**
- * JavaFX client app that provides a simple login & connectivity screen for the QCS system.
+ * JavaFX client app that provides a simple login &amp; connectivity screen for the QCS system.
  * <p>
  * UI sections:
  * <ul>
@@ -59,7 +59,7 @@ public class QCSLoginClient extends Application {
 
         // banner
         ImageView banner = new ImageView();
-        try { banner.setImage(new Image("file:../images/QCClient.png"));
+        try { banner.setImage(new Image("file:images/QCClient.png"));
         } catch (Exception ignored) {}
         banner.setPreserveRatio(true);
         banner.setFitHeight(140);
